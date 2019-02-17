@@ -1,0 +1,401 @@
+import org.apache.tools.ant.DefaultLogger
+
+import java.nio.file.Paths
+
+// udercouch.download used to get FDSM and JavaAnt direct from Github
+plugins {
+    id 'java'
+    id "de.undercouch.download" version "3.4.3"
+    id "idea"
+}
+
+group 'net.echogy.templates'
+version '1.0'
+
+// load user-configurable settings
+apply from: 'config.gradle'
+
+// JavaCard on Fidesmo doesn't support anything after Java 8
+sourceCompatibility = 1.8
+
+// JavaCard version and location set in config.gradle
+String jcVersion = project.properties.build.jcVersion
+String jcDir = "${locations.javacard[jcVersion]}"
+
+// Controls the mapping between Ant logging (for building CAP files) and Gradle logging.
+// Set to VERBOSE or DEBUG for more logs, set to WARN for fewer
+ant.lifecycleLogLevel = "INFO"
+
+
+repositories {
+    mavenCentral()
+    jcenter()
+}
+
+
+configurations {
+    fdsm
+}
+
+// recreate defaults for visibility. Also fixes a weird issue with IntelliJ
+sourceSets {
+    applet {
+        java {
+            srcDirs = ['src/applet/java']
+        }
+        resources {
+            srcDirs = ['src/applet/resources']
+        }
+    }
+
+    client {
+        java {
+            srcDirs = ['src/client/java']
+        }
+        resources {
+            srcDirs = ['src/client/resources']
+        }
+    }
+
+    test {
+        java {
+            srcDirs = ['src/test/java']
+        }
+        resources {
+            srcDirs = ['src/test/resources']
+        }
+    }
+
+
+}
+
+dependencies {
+    implementation group: 'com.github.martinpaljak', name: 'ant-javacard', version: '18.07.12'
+
+    fdsm requireFdsm()
+    implementation configurations.fdsm.dependencies
+    implementation requireAntJavacard()
+
+    appletImplementation fileTree("$jcDir/lib") { include '*.jar'}
+
+    clientImplementation sourceSets.applet.output
+    clientImplementation (group: 'com.klinec', name: 'jcardsim', version: '3.0.4') {transitive = false }
+
+    testImplementation group: 'org.junit.jupiter', name: 'junit-jupiter-api', version: '5.4.0'
+    testImplementation group: 'org.hamcrest', name: 'hamcrest-core', version: '2.1'
+    testImplementation (group: 'com.klinec', name: 'jcardsim', version: '3.0.4') {transitive = false }
+    testImplementation sourceSets.applet.output
+    testRuntime group: 'org.junit.jupiter', name: 'junit-jupiter-engine', version: '5.4.0'
+
+
+}
+
+def requireFdsm() {
+    def bin = locations.bin
+    mkdir bin
+    download {
+        src 'https://github.com/fidesmo/fdsm/releases/download/19.01.31/fdsm.jar'
+        dest bin
+        onlyIfModified true
+    }
+
+    return files("$bin/fdsm.jar")
+}
+
+def requireAntJavacard() {
+    def lib = locations.lib
+    mkdir lib
+    download {
+        src 'https://github.com/martinpaljak/ant-javacard/releases/download/18.09.25/ant-javacard.jar'
+        dest lib
+        onlyIfModified true
+    }
+
+    return files("$lib/ant-javacard.jar")
+}
+
+
+// TASKS
+
+clean {
+    doFirst {
+        delete file(locations.lib)
+        delete file(locations.bin)
+        delete file(locations.out)
+
+        // deletes Intellij's output directory
+        delete file("$rootDir/out")
+    }
+}
+
+task setup {
+    group = "Build Setup"
+    description = "Setup for the build by creating folders and performing other initialization actions"
+
+    doLast {
+        mkdir locations.lib
+        mkdir locations.bin
+        mkdir locations.out
+    }
+
+}
+
+test {
+    useJUnitPlatform()
+
+    testLogging {
+        events = ["passed", "skipped", "failed", 'standardOut', 'standardError']
+        showStandardStreams = true
+    }
+
+     //uncomment to force all tests (even those that passed) to run every time
+     outputs.upToDateWhen { false }
+}
+
+
+task setupAntJavacard {
+    group = "Build Setup"
+    description = "Create the Ant taskdef for compiling JavaCard to a cap file"
+
+    dependsOn setup
+
+    doLast {
+        ant.taskdef(
+                name: "javacard",
+                classname: "pro.javacard.ant.JavaCard",
+                classpath: "${locations.lib}/ant-javacard.jar"
+        )
+    }
+}
+
+
+task javaVersion {
+    group = 'Version Check'
+    description = 'Returns the JDK version being used by project'
+
+    String javaHome = project.properties['org.gradle.java.home']
+
+    doLast {
+        exec {
+            commandLine("$javaHome/bin/javac", "-version")
+        }
+    }
+}
+
+task collectDependencies() {
+    group = "Misc"
+    description = "Copies all dependencies into the {lib} folder"
+
+    doLast {
+        copy {
+            from configurations.compileClasspath
+            into locations.lib
+        }
+
+        copy {
+            from configurations.appletCompileClasspath
+            into locations.lib
+        }
+
+        copy {
+            from configurations.clientCompileClasspath
+            into locations.lib
+        }
+
+        copy {
+            from configurations.testCompileClasspath
+            into locations.lib
+        }
+
+        copy {
+            from configurations.testRuntimeClasspath
+            into locations.lib
+        }
+    }
+
+
+}
+
+task runClient(type: JavaExec) {
+    group = "Execution"
+    description =  'Run the JavaCard client. Use: runClient --args="<app_id_or_aid> [reset]"'
+
+    dependsOn compileClientJava
+
+    main = client.mainClass
+    classpath = sourceSets.client.runtimeClasspath
+}
+
+task cap {
+    group = "Build"
+    description = "Compile applet into a .cap file using Fidesmo's Javacard utility"
+
+    dependsOn setupAntJavacard
+
+    doFirst {
+        mkdir applet.classDir
+        mkdir applet.capDir
+    }
+
+    doLast {
+        def buffer = new ByteArrayOutputStream()
+        def captureStream = new PrintStream(buffer, true, "UTF-8")
+        def listener = new DefaultLogger(
+                errorPrintStream: captureStream,
+                outputPrintStream: captureStream,
+                messageOutputLevel: org.apache.tools.ant.Project.MSG_INFO
+        )
+        ant.project.addBuildListener(listener)
+
+        ant.javacard(jckit: locations.javacard.get('305')) {
+            cap(sources: applet.srcDir,
+                    classes: applet.classDir,
+                    targetsdk: jcDir,
+                    fidesmoappid: applet.appId,
+                    output: Paths.get((String) applet.capDir, (String) applet.capFile),
+                    verify: applet.verify, ints: applet.intSupport, debug: applet.debug
+            )
+                    {
+                        applet(class: "${applet.package}.${applet.class}")
+                    }
+        }
+
+        String result =  buffer.toString("UTF-8")
+        def filenameRegEx = ~'CAP saved to (.+$)'
+        def matches = (result =~ filenameRegEx)
+
+        cap.ext.file = (matches.hasGroup()) ? matches[0][1] : null
+        ant.project.removeBuildListener(listener)
+    }
+}
+
+
+
+task upload {
+    group = "FDSM"
+    description = "Upload the generated cap file to Fidesmo"
+
+    dependsOn cap
+
+    doLast {
+        println "Executing: java -jar $configurations.fdsm.asPath --upload $cap.file --app-id $applet.appId --app-key $applet.appKey"
+        exec {
+            commandLine("java", "-jar", configurations.fdsm.asPath,
+                        "--upload", cap.file,
+                        "--app-id", applet.appId, "--app-key", applet.appKey)
+        }
+    }
+}
+
+task install {
+    group = "FDSM"
+    description = "Installs the generated cap file to a card. Requires that cap file was previously uploaded"
+
+    dependsOn cap
+
+    doLast {
+        exec {
+            commandLine("java", "-jar", configurations.fdsm.asPath,
+                    "--install", cap.file,
+                    "--app-id", applet.appId, "--app-key", applet.appKey)
+        }
+    }
+}
+
+task installUpload {
+    group = "FDSM"
+    description = "Uploads the cap file to Fidesmo then installs it to a card"
+
+    dependsOn cap
+
+    doLast {
+        exec {
+            commandLine("java", "-jar", configurations.fdsm.asPath,
+                    "--install", cap.file,
+                    "--upload",
+                    "--app-id", applet.appId, "--app-key", applet.appKey)
+        }
+    }
+}
+
+task installTrace {
+    group = "FDSM"
+    description = "Install cap file to a card but print out APDU and API traces"
+
+    dependsOn cap
+
+    doLast {
+        exec {
+            commandLine("java", "-jar", configurations.fdsm.asPath,
+                    "--install", cap.file,
+                    "--verbose", "--trace-apdu", "--trace-api",
+                    "--app-id", applet.appId, "--app-key", applet.appKey)
+        }
+    }
+}
+
+task uninstall {
+    group = "FDSM"
+    description = "Uninstalls an applet from a card. Based only on app-id and app-key, but still needs a cap file"
+
+    dependsOn cap
+
+    doLast {
+        exec {
+            commandLine("java", "-jar", configurations.fdsm.asPath,
+                    "--uninstall", cap.file,
+                    "--app-id", applet.appId, "--app-key", applet.appKey)
+        }
+    }
+}
+
+task cardinfo {
+    group = "FDSM"
+    description = "Get information about the first detected card along with any installed applets"
+
+
+    doLast {
+        exec {
+            commandLine("java", "-jar", configurations.fdsm.asPath,
+                    "--card-info")
+        }
+
+        exec {
+            commandLine("java", "-jar", configurations.fdsm.asPath,
+                    "--card-apps")
+        }
+    }
+}
+
+task installVivokeyOtp {
+    group = "FDSM"
+    description = "Installs the VivoKey OTP applet. Requires a VivoKey device."
+
+    doLast {
+        exec {
+            commandLine("java", "-jar", configurations.fdsm.asPath,
+                    "--run", "61fc54d5/invivo")
+        }
+    }
+}
+
+task uninstallVivokeyOtp {
+    group = "FDSM"
+    description = "Uninstalls the VivoKey OTP applet. Requires a VivoKey device."
+
+    doLast {
+        exec {
+            commandLine("java", "-jar", configurations.fdsm.asPath,
+                    "--run", "61fc54d5/destroy")
+        }
+    }
+}
+
+task foo {
+    group = "Misc"
+    description = "Print a famous quote by Amal"
+
+    doLast {
+        println "You are a giant bag of salty water"
+    }
+}

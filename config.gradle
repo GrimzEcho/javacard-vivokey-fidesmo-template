@@ -1,0 +1,43 @@
+project.ext {
+    locations = [
+        lib: "$rootDir/lib",
+        bin: "$rootDir/bin",
+        out: "$rootDir/build",
+        jdk8: "C:\\Program Files\\Java\\jdk1.8.0_131",
+
+        antBuild: "$rootDir/ant-javacard-build.xml",
+
+        javacard: [
+            '222': "$rootDir/jc_sdks/jc222_kit",
+            '303': "$rootDir/jc_sdks/jc303_kit",
+            '304': "$rootDir/jc_sdks/jc304_kit",
+            '305': "$rootDir/jc_sdks/jc305u3_kit",
+        ]
+    ]
+
+    build = [
+        jcVersion: 222,
+    ]
+
+    applet = [
+        appId: "5d9673b4",
+        appKey: "fd5cef14355a8e88e9dd28856c12313d",
+        
+        package: "com.echogy.fidesmo",
+        class: "JavaCardHelloUniverse",
+        srcDir: "$rootDir/src/applet/java",
+        classDir: "$locations.out/classes",
+        capDir: "$locations.out/cap",
+        capFile: "${project.name}_%a_${build.jcVersion}.cap",
+        verify: true,
+        intSupport: false,
+        debug: false,
+    ]
+
+    client = [
+        mainClass: 'com.echogy.fidesmo.HelloUniverseClient'
+    ]
+
+
+}
+
