@@ -117,7 +117,7 @@ If a task fails, try running `gradlew clean`.
 | cardinfo   | Print details about the first detected smart card and a list of installed applets  |
 | installVivokeyOtp   | Installs the VivoKey OTP applet. Requires that target card is a VivoKey device   |
 | uninstallVivokeyOtp   | Uninstalls the VivoKey OTP applet. Requires that the target card is a VivoKey device  |
-| foo | Prints a famous quote by VivoKey's creator |
+
 
 &nbsp;
 #### Tasks that are exclusively called by other tasks.
